@@ -15,6 +15,9 @@
 #include <asm/system.h>
 #endif
 #include <asm/io.h>
+#if LINUX_VERSION_CODE >=KERNEL_VERSION(4,2,0)
+#include <linux/vmalloc.h>
+#endif
 #include <asm/irq.h>
 #include <asm/uaccess.h>
 
