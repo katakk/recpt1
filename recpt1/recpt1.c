@@ -35,16 +35,24 @@
 #include "mkpath.h"
 
 #include "tssplitter_lite.h"
+#if __PX4__
+#include "asicen_dtv.h"
+#endif /* __PX4__ */
 
 /* maximum write length at once */
 #define SIZE_CHANK 1316
+#if __PX4__
+#define PX4_SIZE_CHANK     MAX_READ_SIZE_PX4  // Jacky Han Added
+#endif /* __PX4__ */
 
 /* ipc message size */
 #define MSGSZ     255
 
 /* globals */
 extern boolean f_exit;
-
+#if __PX4__
+extern char* isdb_ch_name_table[];            // Jacky Han Added
+#endif /* __PX4__ */
 
 /* read 1st line from socket */
 void read_line(int socket, char *p){
@@ -86,7 +94,11 @@ mq_recv(void *t)
 
         if(strcmp(channel, tdata->table->parm_freq)) {
             int current_type = tdata->table->type;
+#if __PX4__
+            ISDB_T_FREQ_CONV_TABLE *table = searchrecoff(tdata, channel);              // Jacky Han Modified
+#else
             ISDB_T_FREQ_CONV_TABLE *table = searchrecoff(channel);
+#endif
             if (table == NULL) {
                 fprintf(stderr, "Invalid Channel: %s\n", channel);
                 goto CHECK_TIME_TO_ADD;
@@ -105,8 +117,24 @@ mq_recv(void *t)
                 /* re-open device */
                 if(close_tuner(tdata) != 0)
                     return NULL;
-
+#if __NO_PX4__
                 tune(channel, tdata, NULL);
+#else
+                //****************************************************
+                //*********** Jacky Han Modification Start ***********
+                //****************************************************
+				if(tdata->IsPX4DeviceFlag == TRUE)
+				{
+                   if(tune(channel, tdata, NULL) != 0)
+				      return NULL;
+				}
+                else
+				   tune(channel, tdata, NULL);
+                //****************************************************
+                //************ Jacky Han Modification End ************
+                //****************************************************
+#endif
+
             } else {
                 /* SET_CHANNEL only */
                 const FREQUENCY freq = {
@@ -117,7 +145,26 @@ mq_recv(void *t)
                     fprintf(stderr, "Cannot tune to the specified channel\n");
                     goto CHECK_TIME_TO_ADD;
                 }
+#if __NO_PX4__
                 calc_cn(tdata->tfd, tdata->table->type, FALSE);
+#else /* __NO_PX4__ */
+                //****************************************************
+                //*********** Jacky Han Modification Start ***********
+                //****************************************************
+				if(tdata->IsPX4DeviceFlag == TRUE)
+				{     
+#if 0		// 2017.09.18			
+				   get_px4_statistics(tdata->tfd, tdata->table->type, FALSE, tdata->channel_name_index);
+#endif
+				}
+				else
+				{
+                   calc_cn(tdata->tfd, tdata->table->type, FALSE);
+				}
+                //****************************************************
+                //************ Jacky Han Modification End ************
+                //****************************************************
+#endif /* __NO_PX4__ */
             }
             /* restart recording */
             if(ioctl(tdata->tfd, START_REC, 0) < 0) {
@@ -156,6 +203,15 @@ create_queue(size_t size)
     QUEUE_T *p_queue;
     int memsize = sizeof(QUEUE_T) + size * sizeof(BUFSZ*);
 
+#if __PX4__
+//fprintf(stderr, "(create_queue)\n");
+//fprintf(stderr, "(create_queue)----------------------------------\n");
+//fprintf(stderr, "(create_queue) size : %d\n",size);
+//fprintf(stderr, "(create_queue) sizeof(QUEUE_T) : %d\n",sizeof(QUEUE_T));
+//fprintf(stderr, "(create_queue) sizeof(BUFSZ*) : %d\n",sizeof(BUFSZ*));
+//fprintf(stderr, "(create_queue) memsize : %d\n",memsize);
+#endif
+
     p_queue = (QUEUE_T*)calloc(memsize, sizeof(char));
 
     if(p_queue != NULL) {
@@ -173,8 +229,63 @@ create_queue(size_t size)
 void
 destroy_queue(QUEUE_T *p_queue)
 {
+#if __PX4__
+//fprintf(stderr, "(destroy_queue)\n");
+#endif /* __PX4__ */
     if(!p_queue)
         return;
+
+#if __PX4__
+    //****************************************************
+    //************* Jacky Han Insertion Start ************
+    //****************************************************
+    BUFSZ *buffer;
+
+    pthread_mutex_lock(&p_queue->mutex);
+
+
+
+//fprintf(stderr, "(destroy_queue)----------------------------------\n");
+//fprintf(stderr, "(destroy_queue) p_queue->num_used : %d\n",p_queue->num_used);
+//fprintf(stderr, "(destroy_queue) p_queue->out : %d\n",p_queue->out);
+//fprintf(stderr, "(destroy_queue) p_queue->num_avail : %d\n",p_queue->num_avail);
+
+    while(p_queue->num_used != 0)
+	{
+
+
+          /* take buffer address */
+          buffer = p_queue->buffer[p_queue->out];
+
+		  if(buffer)
+		  {
+
+//fprintf(stderr, "(destroy_queue) Release buffer\n");
+
+		     free(buffer->pBuffer);
+             free(buffer);
+		  }
+
+
+          /* move position marker for output to next position */
+          p_queue->out++;
+          p_queue->out %= p_queue->size;
+
+          /* update counters */
+          p_queue->num_avail++;
+          p_queue->num_used--;
+
+//fprintf(stderr, "(destroy_queue) p_queue->num_used : %d\n",p_queue->num_used);
+//fprintf(stderr, "(destroy_queue) p_queue->out : %d\n",p_queue->out);
+//fprintf(stderr, "(destroy_queue) p_queue->num_avail : %d\n",p_queue->num_avail);
+
+    }
+
+    pthread_mutex_unlock(&p_queue->mutex);
+    //****************************************************
+    //************** Jacky Han Insertion End *************
+    //****************************************************
+#endif /* __PX4__ */
 
     pthread_mutex_destroy(&p_queue->mutex);
     pthread_cond_destroy(&p_queue->cond_avail);
@@ -320,7 +431,11 @@ reader_func(void *p)
             break;
         }
 
+#if __PX4__
+        sbuf.data = qbuf->pBuffer;            // Jacky Han Modified
+#else
         sbuf.data = qbuf->buffer;
+#endif /* __PX4__ */
         sbuf.size = qbuf->size;
 
         buf = sbuf; /* default */
@@ -350,18 +465,18 @@ reader_func(void *p)
             }
 
             while(buf.size) {
-                /* 分離対象PIDの抽出 */
+                /* 刁E��対象PIDの抽出 */
                 if(split_select_finish != TSS_SUCCESS) {
                     split_select_finish = split_select(splitter, &buf);
                     if(split_select_finish == TSS_NULL) {
-                        /* mallocエラー発生 */
+                        /* mallocエラー発甁E*/
                         fprintf(stderr, "split_select malloc failed\n");
                         use_splitter = FALSE;
                         goto fin;
                     }
                     else if(split_select_finish != TSS_SUCCESS) {
-                        /* 分離対象PIDが完全に抽出できるまで出力しない
-                         * 1秒程度余裕を見るといいかも
+                        /* 刁E��対象PIDが完�Eに抽出できるまで出力しなぁE
+                         * 1秒程度余裕を見るとぁE��かも
                          */
                         time_t cur_time;
                         time(&cur_time);
@@ -373,7 +488,7 @@ reader_func(void *p)
                     }
                 }
 
-                /* 分離対象以外をふるい落とす */
+                /* 刁E��対象以外をふるい落とぁE*/
                 code = split_ts(splitter, &buf, &splitbuf);
                 if(code == TSS_NULL) {
                     fprintf(stderr, "PMT reading..\n");
@@ -398,10 +513,35 @@ reader_func(void *p)
             int size_remain = buf.size;
             int offset = 0;
 
+#if __PX4__
+//fprintf(stderr,"*********************************************\n");
+//fprintf(stderr,"size_remain : %d\n",size_remain);
+#endif /* __PX4__ */
+
             while(size_remain > 0) {
+#if __NO_PX4__
                 int ws = size_remain < SIZE_CHANK ? size_remain : SIZE_CHANK;
+#else
+				//****************************************************
+				//*********** Jacky Han Modification Start ***********
+				//****************************************************
+                int ws;
+
+				if(tdata->IsPX4DeviceFlag)
+				   ws = size_remain < PX4_SIZE_CHANK ? size_remain : PX4_SIZE_CHANK;
+				else
+				   ws = size_remain < SIZE_CHANK ? size_remain : SIZE_CHANK;
+				//****************************************************
+				//************ Jacky Han Modification End ************
+				//****************************************************
+#endif /* __PX4__ */
+
+//fprintf(stderr,"ws : %d\n",ws);
 
                 wc = write(wfd, buf.data + offset, ws);
+
+//fprintf(stderr,"wc(1) : %d\n",wc);
+
                 if(wc < 0) {
                     perror("write");
                     file_err = 1;
@@ -431,6 +571,9 @@ reader_func(void *p)
             }
         }
 
+#if __PX4__
+		free(qbuf->pBuffer);            // Jacky Han Added
+#endif /* __PX4__ */
         free(qbuf);
         qbuf = NULL;
 
@@ -448,7 +591,7 @@ reader_func(void *p)
             }
 
             if(use_splitter) {
-                /* 分離対象以外をふるい落とす */
+                /* 刁E��対象以外をふるい落とぁE*/
                 code = split_ts(splitter, &buf, &splitbuf);
                 if(code == TSS_NULL) {
                     split_select_finish = TSS_ERROR;
@@ -464,7 +607,13 @@ reader_func(void *p)
             }
 
             if(!fileless && !file_err) {
+
+//fprintf(stderr,"buf.size : %d\n",buf.size);
+
                 wc = write(wfd, buf.data, buf.size);
+
+//fprintf(stderr,"wc(2) : %d\n",wc);
+
                 if(wc < 0) {
                     perror("write");
                     file_err = 1;
@@ -493,8 +642,8 @@ reader_func(void *p)
 
     time_t cur_time;
     time(&cur_time);
-    fprintf(stderr, "Recorded %dsec\n",
-            (int)(cur_time - tdata->start_time));
+
+    fprintf(stderr, "(PID:%d)(CH:%s) Recorded %dsec\n",getpid(),isdb_ch_name_table[tdata->channel_name_index], (int)(cur_time - tdata->start_time));               // Jacky Han Modified
 
     return NULL;
 }
@@ -614,7 +763,11 @@ main(int argc, char **argv)
     pthread_t signal_thread;
     pthread_t reader_thread;
     pthread_t ipc_thread;
+#if __NO_PX4__
     QUEUE_T *p_queue = create_queue(MAX_QUEUE);
+#else
+    QUEUE_T *p_queue = NULL; // Jacky Han Modified
+#endif /* __PX4__ */
     BUFSZ   *bufptr;
     decoder *decoder = NULL;
     splitter *splitter = NULL;
@@ -669,6 +822,17 @@ main(int argc, char **argv)
     int connected_socket = 0, listening_socket = 0;
     unsigned int len;
     char *channel = NULL;
+#if __PX4__
+#if 0		// 2017.09.18
+	boolean ChannelLockFlag;                 // Jacky Han Added
+#endif
+    boolean DropFirstReceivingDataCounter;   // Jacky Han Added
+
+//fprintf(stderr, "\n(main)\n");
+
+	tdata.IsPX4DeviceFlag = FALSE;              // Jacky Han Added
+	tdata.channel_name_index = 166;             // Jacky Han Added
+#endif /* __PX4__ */
 
     while((result = getopt_long(argc, argv, "br:smn:ua:H:p:d:hvli:",
                                 long_options, &option_index)) != -1) {
@@ -760,7 +924,7 @@ main(int argc, char **argv)
             perror("failed to start");
             return 1;
         }
-        fprintf(stderr, "pid = %d\n", getpid());
+//        fprintf(stderr, "pid = %d\n", getpid());
 
         struct sockaddr_in sin;
         int ret;
@@ -813,7 +977,7 @@ main(int argc, char **argv)
             }
         }
 
-        fprintf(stderr, "pid = %d\n", getpid());
+//        fprintf(stderr, "pid = %d\n", getpid());
 
         /* tune */
         if(tune(argv[optind], &tdata, device) != 0)
@@ -861,6 +1025,19 @@ main(int argc, char **argv)
             use_b25 = FALSE;
         }
     }
+
+#if __PX4__
+    //****************************************************
+    //************* Jacky Han Insertion Start ************
+    //****************************************************
+    if(tdata.IsPX4DeviceFlag == TRUE)
+       p_queue = create_queue(MAX_QUEUE_PX4);
+	else
+       p_queue = create_queue(MAX_QUEUE);
+    //****************************************************
+    //************** Jacky Han Insertion End *************
+    //****************************************************
+#endif /* __PX4__ */
 
     while(1){    // http-server add-
         if(use_http){
@@ -985,8 +1162,13 @@ main(int argc, char **argv)
             return 1;
         }
 
-        fprintf(stderr, "\nRecording...\n");
-
+        fprintf(stderr, "\n(PID:%d)(CH:%s) Recording...\n",getpid(),isdb_ch_name_table[tdata.channel_name_index]);         // Jacky Han Modified
+#if __PX4__
+#if 0		// 2017.09.18
+		ChannelLockFlag = FALSE;             // Jacky Han Added
+#endif
+		DropFirstReceivingDataCounter = 0;   // Jacky Han Added
+#endif /* __PX4__ */
         time(&tdata.start_time);
 
         /* read from tuner */
@@ -1000,7 +1182,50 @@ main(int argc, char **argv)
                 f_exit = TRUE;
                 break;
             }
+#if __PX4__
+            //****************************************************
+            //************* Jacky Han Insertion Start ************
+            //****************************************************
+            if(tdata.IsPX4DeviceFlag == TRUE)
+			   bufptr->pBuffer = malloc(sizeof(unsigned char) * MAX_READ_SIZE_PX4);
+			else
+			   bufptr->pBuffer = malloc(sizeof(unsigned char) * MAX_READ_SIZE);
+            if(!bufptr->pBuffer) 
+			{
+			    free(bufptr);
+				bufptr = NULL;
+                f_exit = TRUE;
+                break;
+            }
+			if(tdata.IsPX4DeviceFlag == TRUE)
+			{
+#if 0		// 2017.09.18
+			   if(ChannelLockFlag == FALSE)
+			   {
+				  ChannelLockFlag = get_px4_statistics(tdata.tfd, tdata.table->type, FALSE, tdata.channel_name_index);
+			   }
+#endif
+			}
+            //****************************************************
+            //************** Jacky Han Insertion End *************
+            //****************************************************
+#endif /* __PX4__ */
+
+#if __NO_PX4__
             bufptr->size = read(tdata.tfd, bufptr->buffer, MAX_READ_SIZE);
+#else
+            //****************************************************
+            //*********** Jacky Han Modification Start ***********
+            //****************************************************
+			if(tdata.IsPX4DeviceFlag == TRUE)
+               bufptr->size = read(tdata.tfd, bufptr->pBuffer, MAX_READ_SIZE_PX4);
+			else
+               bufptr->size = read(tdata.tfd, bufptr->pBuffer, MAX_READ_SIZE);
+            //****************************************************
+            //************ Jacky Han Modification End ************
+            //****************************************************
+#endif
+
             if(bufptr->size <= 0) {
                 if((cur_time - tdata.start_time) >= tdata.recsec && !tdata.indefinite) {
                     f_exit = TRUE;
@@ -1008,10 +1233,50 @@ main(int argc, char **argv)
                     break;
                 }
                 else {
+#if __PX4__
+				    free(bufptr->pBuffer); // Jacky Han Modification
+#endif
                     free(bufptr);
                     continue;
                 }
             }
+
+#if __PX4__
+            //****************************************************
+            //*********** Jacky Han Modification Start ***********
+            //****************************************************
+			else {
+			   if(tdata.IsPX4DeviceFlag == TRUE) {
+			      if(tdata.channel_name_index >= 53) {
+                     if(DropFirstReceivingDataCounter < 2) {
+                        DropFirstReceivingDataCounter++;
+
+				        free(bufptr->pBuffer);
+                        free(bufptr);
+                        continue;
+					 }
+				  }
+			   }
+			}
+            //****************************************************
+            //************ Jacky Han Modification End ************
+            //****************************************************
+#endif
+#ifdef ASV5220_USE_APKEY1
+            //****************************************************
+            //*********** Jacky Han Modification Start ***********
+            //****************************************************
+            if(tdata.IsPX4DeviceFlag == FALSE)
+			{
+		       if( (bufptr->size%188)==0 )
+			   {
+			       DTV_GetDecryptData(bufptr->pBuffer, bufptr->size/188 ,bufptr->pBuffer,tdata.tfd);
+			   }
+			}
+            //****************************************************
+            //************ Jacky Han Modification End ************
+            //****************************************************
+#endif /* __PX4__ */
             enqueue(p_queue, bufptr);
 
             /* stop recording */
@@ -1025,7 +1290,31 @@ main(int argc, char **argv)
                         f_exit = TRUE;
                         break;
                     }
+#if __NO_PX4__
                     bufptr->size = read(tdata.tfd, bufptr->buffer, MAX_READ_SIZE);
+#else // __NO_PX4__
+                    //****************************************************
+                    //*********** Jacky Han Modification Start ***********
+                    //****************************************************
+                    if(tdata.IsPX4DeviceFlag == TRUE)
+			           bufptr->pBuffer = malloc(sizeof(unsigned char) * MAX_READ_SIZE_PX4);
+			        else
+			           bufptr->pBuffer = malloc(sizeof(unsigned char) * MAX_READ_SIZE);
+                    if(!bufptr->pBuffer) 
+					{
+			           free(bufptr);
+			 	       bufptr = NULL;
+                       f_exit = TRUE;
+                       break;
+					}
+					if(tdata.IsPX4DeviceFlag == TRUE)
+                       bufptr->size = read(tdata.tfd, bufptr->pBuffer, MAX_READ_SIZE_PX4);
+					else
+                       bufptr->size = read(tdata.tfd, bufptr->pBuffer, MAX_READ_SIZE);
+                    //****************************************************
+                    //************ Jacky Han Modification End ************
+                    //****************************************************
+#endif /* __NO_PX4__ */
                     if(bufptr->size <= 0) {
                         f_exit = TRUE;
                         enqueue(p_queue, NULL);
@@ -1055,7 +1344,20 @@ main(int argc, char **argv)
         destroy_queue(p_queue);
         if(use_http){    // http-server add-
             //reset queue
+#if __NO_PX4__
             p_queue = create_queue(MAX_QUEUE);
+#else /* __NO_PX4__ */
+            //****************************************************
+            //*********** Jacky Han Modification Start ***********
+            //****************************************************
+            if(tdata.IsPX4DeviceFlag == TRUE)
+               p_queue = create_queue(MAX_QUEUE_PX4);
+	        else
+               p_queue = create_queue(MAX_QUEUE);
+            //****************************************************
+            //************ Jacky Han Modification End ************
+            //****************************************************
+#endif /* __NO_PX4__ */
 
             /* close http socket */
             close(tdata.wfd);

@@ -132,6 +132,10 @@ main(int argc, char **argv)
     char *voltage[] = {"0V", "11V", "15V"};
     boolean use_bell = FALSE;
 
+#if __PX4__
+	tdata.IsPX4DeviceFlag = FALSE;              // Jacky Han Added
+	tdata.channel_name_index = 166;             // Jacky Han Added
+#endif /* __PX4__ */
     while((result = getopt_long(argc, argv, "bhvln:d:",
                                 long_options, &option_index)) != -1) {
         switch(result) {
@@ -198,8 +202,26 @@ main(int argc, char **argv)
     while(1) {
         if(f_exit)
             break;
+#if __NO_PX4__
         /* show signal strength */
         calc_cn(tdata.tfd, tdata.table->type, use_bell);
+#else
+        //****************************************************
+        //*********** Jacky Han Modification Start ***********
+        //****************************************************
+		if(tdata.IsPX4DeviceFlag == TRUE)
+		{
+           get_px4_statistics(tdata.tfd, tdata.table->type, use_bell, tdata.channel_name_index);
+		}
+		else
+		{
+           /* show signal strength */
+           calc_cn(tdata.tfd, tdata.table->type, use_bell);
+		}
+        //****************************************************
+        //************ Jacky Han Modification End ************
+        //****************************************************
+#endif
         sleep(1);
     }
 

@@ -3,7 +3,9 @@
 #include "recpt1core.h"
 #include "version.h"
 #include "pt1_dev.h"
-
+#if __PX4__
+#include "px4_ioctl.h"                           // Jacky Han Added
+#endif /* __PX4__ */
 #define ISDB_T_NODE_LIMIT 24        // 32:ARIB limit 24:program maximum
 #define ISDB_T_SLOT_LIMIT 8
 
@@ -16,7 +18,11 @@ ISDB_T_FREQ_CONV_TABLE isdb_t_conv_set = { 0, CHTYPE_SATELLITE, 0, bs_channel_bu
 #if 0
 /* lookup frequency conversion table*/
 ISDB_T_FREQ_CONV_TABLE *
+#if __NO_PX4__
 searchrecoff(char *channel)
+#else
+searchrecoff(thread_data *tdata, char *channel)                      // Jacky Han Modified
+#endif /* __PX4__ */
 {
     int lp;
 
@@ -26,6 +32,9 @@ searchrecoff(char *channel)
         if((memcmp(isdb_t_conv_table[lp].parm_freq, channel,
                    strlen(channel)) == 0) &&
            (strlen(channel) == strlen(isdb_t_conv_table[lp].parm_freq))) {
+#if __PX4__
+		    tdata->channel_name_index = lp;              // Jacky Han Added
+#endif /* __PX4__ */
             return &isdb_t_conv_table[lp];
         }
     }
@@ -35,7 +44,11 @@ searchrecoff(char *channel)
 
 /* lookup frequency conversion table*/
 ISDB_T_FREQ_CONV_TABLE *
+#if __NO_PX4__
 searchrecoff(char *channel)
+#else /* __PX4__ */
+searchrecoff(thread_data *tdata, char *channel)                        // Jacky Han Modified
+#endif /* __PX4__ */
 {
     int lp;
 
@@ -68,6 +81,9 @@ searchrecoff(char *channel)
         if((memcmp(isdb_t_conv_table[lp].parm_freq, channel,
                    strlen(channel)) == 0) &&
            (strlen(channel) == strlen(isdb_t_conv_table[lp].parm_freq))) {
+#if __PX4__
+		    tdata->channel_name_index = lp;              // Jacky Han Added
+#endif /* __PX4__ */
             return &isdb_t_conv_table[lp];
         }
     }
@@ -137,6 +153,78 @@ getsignal_isdb_s(int signal)
             afLevelTable[(sigbuf[0] >> 4) + 0x01U] * fMixRate;
     }
 }
+#if __PX4__
+//****************************************************
+//************* Jacky Han Insertion Start ************
+//****************************************************
+boolean get_px4_statistics(int fd, int type, boolean use_bell, int ch_name_index)
+{
+    int     rc;
+    double  P;
+    double  CNR;
+    int bell = 0;
+	GetStatisticRequest request;
+	boolean LockFlag = FALSE;
+
+    if(ioctl(fd,IOCTL_ITE_DEMOD_GETSTATISTIC,(void *)&request) < 0) 
+	{
+        fprintf(stderr, "IO Control(IOCTL_ITE_DEMOD_GETSTATISTIC) Failed !\n");
+        return LockFlag;
+    }
+
+	if(request.statistic.signalLocked == True)
+	   LockFlag = TRUE;
+
+    if(ioctl(fd, GET_SIGNAL_STRENGTH, &rc) < 0) 
+	{
+        fprintf(stderr, "IO Control(GET_SIGNAL_STRENGTH) Failed !\n");
+        return LockFlag;
+    }
+
+	if(rc)                
+	{                     
+       if(type == CHTYPE_GROUND) 
+	   {
+           P = log10(5505024/(double)rc) * 10;
+           CNR = (0.000024 * P * P * P * P) - (0.0016 * P * P * P) +
+                       (0.0398 * P * P) + (0.5491 * P)+3.0965;
+       }
+       else 
+	   {
+           CNR = getsignal_isdb_s(rc);
+       }
+	}
+	else                  
+	   CNR = 0.0;         
+
+    if(use_bell) 
+	{
+        if(CNR >= 30.0)
+            bell = 3;
+        else 
+		if(CNR >= 15.0 && CNR < 30.0)
+            bell = 2;
+        else 
+		if(CNR < 15.0)
+            bell = 1;
+
+//        fprintf(stderr, "\r(PID:%d)(CH:%s) Presented = 0x%x, Locked = 0x%x, Strength = %d, Quality = %d, C/N = %fdB ",getpid(),isdb_ch_name_table[ch_name_index],request.statistic.signalPresented,request.statistic.signalLocked,request.statistic.signalStrength,request.statistic.signalQuality,CNR);
+        fprintf(stderr, "(PID:%d)(CH:%s) Presented = 0x%x, Locked = 0x%x, Strength = %d, Quality = %d, C/N = %fdB \n",getpid(),isdb_ch_name_table[ch_name_index],request.statistic.signalPresented,request.statistic.signalLocked,request.statistic.signalStrength,request.statistic.signalQuality,CNR);
+
+        do_bell(bell);
+    }
+    else 
+	{
+//        fprintf(stderr, "\r(PID:%d)(CH:%s) Presented = 0x%x, Locked = 0x%x, Strength = %d, Quality = %d, C/N = %fdB ",getpid(),isdb_ch_name_table[ch_name_index],request.statistic.signalPresented,request.statistic.signalLocked,request.statistic.signalStrength,request.statistic.signalQuality,CNR);
+        fprintf(stderr, "(PID:%d)(CH:%s) Presented = 0x%x, Locked = 0x%x, Strength = %d, Quality = %d, C/N = %fdB \n",getpid(),isdb_ch_name_table[ch_name_index],request.statistic.signalPresented,request.statistic.signalLocked,request.statistic.signalStrength,request.statistic.signalQuality,CNR);
+    }
+
+	return LockFlag;
+}
+//****************************************************
+//************** Jacky Han Insertion End *************
+//****************************************************
+#endif /* __PX4__ */
 
 void
 calc_cn(int fd, int type, boolean use_bell)
@@ -151,6 +239,11 @@ calc_cn(int fd, int type, boolean use_bell)
         return ;
     }
 
+#if __PX4__
+	if(rc)                // Jacky Han Added
+    {                     // Jacky Han Added
+#endif /* __PX4__ */
+
     if(type == CHTYPE_GROUND) {
         P = log10(5505024/(double)rc) * 10;
         CNR = (0.000024 * P * P * P * P) - (0.0016 * P * P * P) +
@@ -159,6 +252,12 @@ calc_cn(int fd, int type, boolean use_bell)
     else {
         CNR = getsignal_isdb_s(rc);
     }
+#if __PX4__
+	}                     // Jacky Han Added
+
+	else                  // Jacky Han Added
+	   CNR = 0.0;         // Jacky Han Added
+#endif /* __PX4__ */
 
     if(use_bell) {
         if(CNR >= 30.0)
@@ -200,22 +299,22 @@ show_channels(void)
     fprintf(stderr, "BS03_0: WOWOWプライム\n");
     fprintf(stderr, "BS03_1: BSジャパン\n");
     fprintf(stderr, "BS05_0: WOWOWライブ\n");
-    fprintf(stderr, "BS05_1: WOWOWシネマ\n");
+    fprintf(stderr, "BS05_1: WOWOWシネ�E\n");
     fprintf(stderr, "BS07_0: スターチャンネル2/3\n");
-    fprintf(stderr, "BS07_1: BSアニマックス\n");
-    fprintf(stderr, "BS07_2: ディズニーチャンネル\n");
+    fprintf(stderr, "BS07_1: BSアニ�EチE��ス\n");
+    fprintf(stderr, "BS07_2: チE��ズニ�Eチャンネル\n");
     fprintf(stderr, "BS09_0: BS11\n");
     fprintf(stderr, "BS09_1: スターチャンネル1\n");
     fprintf(stderr, "BS09_2: TwellV\n");
     fprintf(stderr, "BS11_0: FOX bs238\n");
-    fprintf(stderr, "BS11_1: BSスカパー!\n");
+    fprintf(stderr, "BS11_1: BSスカパ�E!\n");
     fprintf(stderr, "BS11_2: 放送大学\n");
-    fprintf(stderr, "BS13_0: BS日テレ\n");
+    fprintf(stderr, "BS13_0: BS日チE��\n");
     fprintf(stderr, "BS13_1: BSフジ\n");
     fprintf(stderr, "BS15_0: NHK BS1\n");
     fprintf(stderr, "BS15_1: NHK BSプレミアム\n");
-    fprintf(stderr, "BS17_0: 地デジ難視聴1(NHK/NHK-E/CX)\n");
-    fprintf(stderr, "BS17_1: 地デジ難視聴2(NTV/TBS/EX/TX)\n");
+    fprintf(stderr, "BS17_0: 地チE��難視�E1(NHK/NHK-E/CX)\n");
+    fprintf(stderr, "BS17_1: 地チE��難視�E2(NTV/TBS/EX/TX)\n");
     fprintf(stderr, "BS19_0: グリーンチャンネル\n");
     fprintf(stderr, "BS19_1: J SPORTS 1\n");
     fprintf(stderr, "BS19_2: J SPORTS 2\n");
@@ -383,9 +482,26 @@ tune(char *channel, thread_data *tdata, char *device)
     int num_devs;
     int lp;
     FREQUENCY freq;
+#if __PX4__
+	unsigned char CheckChannelLockCounterForPX4Device = 4;             // Jacky Han Added
+	boolean ChannelLockFlagForPX4Device;                               // Jacky Han Added
+	boolean IsPX4DeviceFlag = FALSE;                                   // Jacky Han Added
+
+	unsigned char EncAPKey[16];
+	unsigned char EncPCKey[16]={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,16};	// Just use a dummy key to test
+	unsigned char EncAPKey1[16]={0x8b, 0x59, 0x82, 0xe7, 0x98, 0xdc, 0x40, 0xef, 0x8e, 0x43, 0x21, 0x6f, 0xeb, 0x92, 0x80, 0x8c};	// use PLEX key1[0]
+	unsigned char EncAPKey2[16]={0xf0, 0xf1, 0x33, 0x84, 0xa1, 0x1d, 0x46, 0x25, 0x95, 0x1a, 0xce, 0x09, 0xdd, 0x86, 0x78, 0xa4};	// use PLEX key2[0]
+
+	tdata->IsPX4DeviceFlag = FALSE;                          // Jacky Han Added 
+#endif /* __PX4__ */
 
     /* get channel */
+#if __PX4__
+    tdata->table = searchrecoff(tdata, channel);           // Jacky Han Modified
+#else
     tdata->table = searchrecoff(channel);
+#endif /* __PX4__ */
+
     if(tdata->table == NULL) {
         fprintf(stderr, "Invalid Channel: %s\n", channel);
         return 1;
@@ -402,6 +518,26 @@ tune(char *channel, thread_data *tdata, char *device)
             fprintf(stderr, "Cannot open tuner device: %s\n", device);
             return 1;
         }
+
+#if __PX4__
+//fprintf(stderr, "(tune) device : %s\n",device);
+
+		if(strncmp("/dev/px4-DTV",device,strlen("/dev/px4-DTV")) != 0)                   // Jacky Han Added
+		{
+#ifdef ASV5220_USE_APKEY1
+		   memcpy(EncAPKey,EncAPKey1,16);
+		   DTV_SetEncrypKey(EncAPKey,16,EncPCKey,16,tdata->tfd);
+#else
+		   memcpy(EncAPKey,EncAPKey2,16);
+		   DTV_SetEncrypKey(EncAPKey,16,EncPCKey,16,tdata->tfd);
+#endif
+		   IsPX4DeviceFlag = FALSE;                                           // Jacky Han Added
+		}
+		else                                                                        // Jacky Han Added
+		{
+		   IsPX4DeviceFlag = TRUE;                                            // Jacky Han Added
+		}
+#endif /* __PX4__ */
 
         /* power on LNB */
         if(tdata->table->type == CHTYPE_SATELLITE) {
@@ -444,6 +580,28 @@ tune(char *channel, thread_data *tdata, char *device)
 
             tdata->tfd = open(tuner[lp], O_RDONLY);
             if(tdata->tfd >= 0) {
+
+#if __PX4__
+//fprintf(stderr, "(tune) tuner[%d] : %s\n",lp,tuner[lp]);
+
+
+		       if(strncmp("/dev/px4-DTV",tuner[lp],strlen("/dev/px4-DTV")) != 0)                   // Jacky Han Added
+			   {
+#ifdef ASV5220_USE_APKEY1
+				  memcpy(EncAPKey,EncAPKey1,16);
+				  DTV_SetEncrypKey(EncAPKey,16,EncPCKey,16,tdata->tfd);
+#else
+				  memcpy(EncAPKey,EncAPKey2,16);
+				  DTV_SetEncrypKey(EncAPKey,16,EncPCKey,16,tdata->tfd);
+#endif
+		          IsPX4DeviceFlag = FALSE;                                               // Jacky Han Added 
+			   }
+			   else                                                                      // Jacky Han Added
+			   { 
+		          IsPX4DeviceFlag = TRUE;                                                // Jacky Han Added
+			   }
+#endif /* __PX4__ */
+
                 /* power on LNB */
                 if(tdata->table->type == CHTYPE_SATELLITE) {
                     if(ioctl(tdata->tfd, LNB_ENABLE, tdata->lnb) < 0) {
@@ -491,10 +649,61 @@ tune(char *channel, thread_data *tdata, char *device)
     }
 
     if(!tdata->tune_persistent) {
+#if __PX4__
+        //****************************************************
+        //*********** Jacky Han Modification Start ***********
+        //****************************************************
+		if(IsPX4DeviceFlag == TRUE)
+		{
+           while(1)
+		   {
+                 ChannelLockFlagForPX4Device = get_px4_statistics(tdata->tfd, tdata->table->type, FALSE, tdata->channel_name_index);
+				 if(ChannelLockFlagForPX4Device == TRUE)
+					break;
+				 CheckChannelLockCounterForPX4Device--;
+				 if(CheckChannelLockCounterForPX4Device)
+                    usleep(250000);
+                 else
+				    break;
+		   }
+		}
+		else
+		{
+        //****************************************************
+        //************ Jacky Han Modification End ************
+        //****************************************************
+#endif /* __PX4__ */
         /* show signal strength */
         calc_cn(tdata->tfd, tdata->table->type, FALSE);
+#if __PX4__
+		} // Jacky Han Modification
+#endif /* __PX4__ */
     }
 
+#if __PX4__
+	tdata->IsPX4DeviceFlag = IsPX4DeviceFlag;              // Jacky Han Added
+#endif /* __PX4__ */
+
+#if __PX4__
+     //****************************************************
+     //*********** Jacky Han Modification Start ***********
+     //****************************************************
+	if(IsPX4DeviceFlag == TRUE)
+	{
+	   if(ChannelLockFlagForPX4Device == TRUE)
+          return 0;
+	   else
+	   {
+          fprintf(stderr, "(PID:%d)(CH:%s) No Signal !\n",getpid(),isdb_ch_name_table[tdata->channel_name_index]);
+
+		  return 1;
+	   }
+	}
+	else
+    //****************************************************
+    //************ Jacky Han Modification End ************
+    //****************************************************
+#endif /* __PX4__ */
     return 0; /* success */
 }
 
@@ -508,9 +717,18 @@ tune(char *channel, thread_data *tdata, char *device)
     int num_devs;
     int lp;
     FREQUENCY freq;
+#if __PX4__
+	boolean IsPX4DeviceFlag = FALSE;                       // Jacky Han Added
+
+	tdata->IsPX4DeviceFlag = FALSE;                        // Jacky Han Added 
+#endif /* __PX4__ */
 
     /* get channel */
+#if __PX4__
+    tdata->table = searchrecoff(tdata, channel);           // Jacky Han Modified
+#else /* __PX4__ */
     tdata->table = searchrecoff(channel);
+#endif /* __PX4__ */
     if(tdata->table == NULL) {
         fprintf(stderr, "Invalid Channel: %s\n", channel);
         return 1;
@@ -527,6 +745,23 @@ tune(char *channel, thread_data *tdata, char *device)
             fprintf(stderr, "Cannot open tuner device: %s\n", device);
             return 1;
         }
+
+#if __PX4__
+        //****************************************************
+        //************* Jacky Han Insertion Start ************
+        //****************************************************
+		if(strncmp("/dev/px4-DTV",device,strlen("/dev/px4-DTV")) != 0)                   // Jacky Han Added
+		{
+		   IsPX4DeviceFlag = FALSE;
+		}
+		else
+		{
+		   IsPX4DeviceFlag = TRUE;
+		}
+        //****************************************************
+        //************** Jacky Han Insertion End *************
+        //****************************************************
+#endif /* __PX4__ */
 
         /* power on LNB */
         if(tdata->table->type == CHTYPE_SATELLITE) {
@@ -556,6 +791,22 @@ tune(char *channel, thread_data *tdata, char *device)
         for(lp = 0; lp < num_devs; lp++) {
             tdata->tfd = open(tuner[lp], O_RDONLY);
             if(tdata->tfd >= 0) {
+#if __PX4__
+               //****************************************************
+               //************* Jacky Han Insertion Start ************
+               //****************************************************
+		       if(strncmp("/dev/px4-DTV",tuner[lp],strlen("/dev/px4-DTV")) != 0)                   
+			   {
+		          IsPX4DeviceFlag = FALSE;                                              
+			   }
+			   else                                                                      
+			   { 
+		          IsPX4DeviceFlag = TRUE;                                                
+			   }
+               //****************************************************
+               //************** Jacky Han Insertion End *************
+               //****************************************************
+#endif /* __PX4__ */
                 /* power on LNB */
                 if(tdata->table->type == CHTYPE_SATELLITE) {
                     if(ioctl(tdata->tfd, LNB_ENABLE, tdata->lnb) < 0) {
@@ -581,9 +832,32 @@ tune(char *channel, thread_data *tdata, char *device)
         }
     }
 
-    /* show signal strength */
-    calc_cn(tdata->tfd, tdata->table->type, FALSE);
+#if __PX4__
+    //****************************************************
+    //*********** Jacky Han Modification Start ***********
+    //****************************************************
+	if(IsPX4DeviceFlag == TRUE)
+	{
+       get_px4_statistics(tdata->tfd, tdata->table->type, FALSE, tdata->channel_name_index);
+	}
+	else
+	{
+    //****************************************************
+    //************ Jacky Han Modification End ************
+    //****************************************************
+#endif /* __PX4__ */
 
+    /* show signal strength */
+#if __PX4__
+    calc_cn(tdata->tfd, tdata->table->type, FALSE);
+#else
+    calc_cn(tdata->tfd, tdata->table->type, FALSE);
+#endif /* __PX4__ */
+
+#if __PX4__
+	} // Jacky Han Modification
+	tdata->IsPX4DeviceFlag = IsPX4DeviceFlag;                // Jacky Han Added 
+#endif /* __PX4__ */
     return 0; /* success */
 }
 #endif
